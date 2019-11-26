@@ -1,5 +1,53 @@
-pragma solidity 0.5.8;
+pragma solidity 0.5.12;
 pragma experimental ABIEncoderV2;
+
+library SafeMath {
+
+  /**
+  * @dev Multiplies two numbers, throws on overflow.
+  */
+  function mul(uint256 a, uint256 b) internal pure returns (uint256 c) {
+    // Gas optimization: this is cheaper than asserting 'a' not being zero, but the
+    // benefit is lost if 'b' is also tested.
+    // See: https://github.com/OpenZeppelin/openzeppelin-solidity/pull/522
+    if (a == 0) {
+      return 0;
+    }
+
+    c = a * b;
+    assert(c / a == b);
+    return c;
+  }
+
+  /**
+  * @dev Integer division of two numbers, truncating the quotient.
+  */
+  function div(uint256 a, uint256 b) internal pure returns (uint256) {
+    // assert(b > 0); // Solidity automatically throws when dividing by 0
+    // uint256 c = a / b;
+    // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+    return a / b;
+  }
+
+  /**
+  * @dev Subtracts two numbers, throws on overflow (i.e. if subtrahend is greater than minuend).
+  */
+  function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+    assert(b <= a);
+    return a - b;
+  }
+
+  /**
+  * @dev Adds two numbers, throws on overflow.
+  */
+  function add(uint256 a, uint256 b) internal pure returns (uint256 c) {
+    c = a + b;
+    assert(c >= a);
+    return c;
+  }
+}
+
+
 
 /// @title StandardStaking
 /// @dev A set of contracts for people to open stakes, and allow people to claim against them
@@ -20,7 +68,8 @@ contract StandardStaking {
     uint griefingFee; // The fee which is paid to the winning side for the trouble of dealing with the claim
     bool active; // A boolean which stores whether a user's stake is active (ie has the funds and accepts claims)
     uint deadline; // A uint representing the time after which the staker may relinquish their stake
-    Claim[] claims; // An array of Fulfillments which store the various submissions which have been made to the bounty
+    mapping(uint => Claim) claims; // An array of Fulfillments which store the various submissions which have been made to the bounty
+    uint numClaims;
   }
 
   struct Claim {
@@ -30,13 +79,12 @@ contract StandardStaking {
     bool ruled; // A boolean which stores whether or not the claim has been ruled upon by one of the available arbiters
     bool correct; // A boolean which stores whether or not the claimant has been deemed correct in their claim
   }
-
   /*
    * Storage
    */
 
-  Stake[] public stakes; // An array of stakes
-
+  mapping (uint => Stake) public stakes; // An array of stakes
+  uint public numStakes;
 
   bool public callStarted; // Ensures mutex for the entire contract
 
@@ -58,37 +106,10 @@ contract StandardStaking {
     _;
   }
 
-  modifier validateClaimArrayIndex(
-    uint _stakeId,
-    uint _index)
-  {
-    require(_index < stakes[_stakeId].claims.length);
-    _;
-  }
-
-  modifier validateArbiterArrayIndex(
-    uint _stakeId,
-    uint _index)
-  {
-    require(_index < stakes[_stakeId].arbiters.length);
-    _;
-  }
-
   modifier onlyStaker(
-  address _sender,
   uint _stakeId)
   {
-  require(_sender == stakes[_stakeId].staker);
-  _;
-  }
-
-  modifier isValidArbiter(
-    address _sender,
-    uint _stakeId,
-    uint _arbiterId)
-  {
-    require(_sender ==
-            stakes[_stakeId].arbiters[_arbiterId].submitter);
+    require(msg.sender == stakes[_stakeId].staker);
     _;
   }
 
@@ -97,23 +118,7 @@ contract StandardStaking {
   uint _stakeId,
   uint _claimId)
   {
-    require(_sender ==
-            bounties[_bountyId].contributions[_contributionId].contributor);
-    _;
-  }
-
-  modifier isActive(
-    uint _claimId)
-  {
-    require(claims[_claimId].active);
-    _;
-  }
-
-  modifier claimNotRuled(
-    uint _stakeId,
-    uint _claimId)
-  {
-    require(!stakes[_stakeId].claims[_claimId].ruled);
+    require(_sender == stakes[_stakeId].claims[_claimId].claimant);
     _;
   }
 
@@ -124,41 +129,11 @@ contract StandardStaking {
     _;
   }
 
-  modifier deadlineAfterNow(
-    uint _deadline)
-  {
-    require(_deadline > now);
-    _;
-  }
-
   modifier deadlineAfterCurrent(
     uint _stakeId,
     uint _deadline)
   {
     require(_deadline > stakes[_stakeId].deadline);
-    _;
-  }
-
-  modifier stakeIsLargeEnough(
-    uint _stakeAmount,
-    uint _arbiterFee,
-    uint _griefingFee)
-  {
-    require(_stakeAmount > (_arbiterFee + _griefingFee));
-    _;
-  }
-
-  modifier atLeastOneArbiter(
-    address payable[] _arbiters)
-  {
-    require(_arbiters.length > 0);
-    _;
-  }
-
-  modifier verifyStakeDeposit(
-    uint _stakeAmount)
-  {
-    require(msg.value == _stakeAmount);
     _;
   }
 
@@ -183,6 +158,13 @@ contract StandardStaking {
     _;
   }
 
+  modifier stakeStillActive(
+    uint _stakeId)
+  {
+    require(stakes[_stakeId].active);
+    _;
+  }
+
  /*
   * Public functions
   */
@@ -191,47 +173,46 @@ contract StandardStaking {
   }
 
   /// @dev createStake(): creates a new stake
-  /// @param _sender the sender of the transaction issuing the bounty (should be the same as msg.sender unless the txn is called by the meta tx relayer)
-  /// @param _issuers the array of addresses who will be the issuers of the bounty
-  /// @param _approvers the array of addresses who will be the approvers of the bounty
-  /// @param _data the IPFS hash representing the JSON object storing the details of the bounty (see docs for schema details)
-  /// @param _deadline the timestamp which will become the deadline of the bounty
-  /// @param _token the address of the token which will be used for the bounty
-  /// @param _tokenVersion the version of the token being used for the bounty (0 for ETH, 20 for ERC20, 721 for ERC721)
-  function createStake(
-    address payable _staker,
-    address payable[] _arbiters,
-    uint _stakeAmount,
-    uint _arbiterFee,
-    uint _griefingFee,
-    uint _deadline,
-    string memory _data)
+  /// @param _staker the sender of the transaction issuing the bounty (should be the same as msg.sender unless the txn is called by the meta tx relayer)
+  /// @param _data the sender of the transaction issuing the bounty (should be the same as msg.sender unless the txn is called by the meta tx relayer)
+  function createStake(address payable _staker,
+                       address payable[] memory _arbiters,
+                       uint _stakeAmount,
+                       uint _arbiterFee,
+                       uint _griefingFee,
+                       uint _deadline,
+                       string memory _data)
     public
-    stakeIsLargeEnough(_stakeAmount, _arbiterFee, _griefingFee)
-    atLeastOneArbiter(_arbiters)
-    deadlineAfterNow(_deadline)
-    verifyStakeDeposit(_stakeAmount)
     payable
     returns (uint)
   {
-    stakes.push(Stake(_staker,
-                      _arbiters,
-                      _stakeAmount,
-                      _arbiterFee,
-                      _griefingFee,
-                      true,
-                      _deadline));
+    require(_deadline > now);
+    require(msg.value == _stakeAmount);
+    require(_arbiters.length > 0);
+    require(_stakeAmount > (_arbiterFee + _griefingFee));
 
-    emit StakeCreated((claims.length - 1),
-                      _sender,
+    uint stakeId = numStakes;
+    Stake storage newStake = stakes[stakeId];
+
+    newStake.staker = _staker;
+    newStake.arbiters = _arbiters;
+    newStake.stakeAmount = _stakeAmount;
+    newStake.arbiterFee = _arbiterFee;
+    newStake.griefingFee = _griefingFee;
+    newStake.deadline = _deadline;
+
+    numStakes = numStakes.add(1);
+
+    emit StakeCreated(stakeId,
+                      msg.sender,
+                      _staker,
                       _arbiters,
                       _stakeAmount,
                       _arbiterFee,
                       _griefingFee,
                       _data, // Instead of storing the string on-chain, it is emitted within the event for easy off-chain consumption
                       _deadline);
-
-    return ((stakes.length - 1));
+    return (stakeId);
   }
 
 
@@ -242,9 +223,9 @@ contract StandardStaking {
   ///                    has elapsed, and the bounty has not yet paid out any funds.
   ///                    All funds deposited in a bounty are at the mercy of a
   ///                    bounty's issuers and approvers, so please be careful!
-  /// @param _sender the sender of the transaction issuing the bounty (should be the same as msg.sender unless the txn is called by the meta tx relayer)
-  /// @param _bountyId the index of the bounty
-  /// @param _amount the amount of tokens being contributed
+  /// @param _stakeId the sender of the transaction issuing the bounty (should be the same as msg.sender unless the txn is called by the meta tx relayer)
+  /// @param _claimAmount the index of the bounty
+  /// @param _data the amount of tokens being contributed
   function openClaim(
     uint _stakeId,
     uint _claimAmount,
@@ -256,14 +237,14 @@ contract StandardStaking {
     claimNotTooLarge(_stakeId, _claimAmount)
     callNotStarted
   {
-    stakes[_stakeId].claims.push(Claim(msg.sender,
-                                  address(0),
-                                  _claimAmount,
-                                  false,
-                                  false));
+    uint claimId =  stakes[_stakeId].numClaims;
+    Claim storage newClaim = stakes[_stakeId].claims[claimId];
+
+    newClaim.claimant = msg.sender;
+    newClaim.claimAmount = _claimAmount;
 
     emit ClaimOpened(_stakeId,
-                     stakes[_stakeId].claims.length - 1, // The new contributionId
+                     claimId, // The new contributionId
                      msg.sender,
                      _claimAmount,
                      _data);
@@ -278,59 +259,56 @@ contract StandardStaking {
     public
     payable
     validateStakeArrayIndex(_stakeId)
-    validateClaimArrayIndex(_claimId)
-    validateArbiterArrayIndex(_arbiterId)
-    isValidArbiter(_stakeId, _arbiterId)
-    claimNotRuled(_stakeId, _claimId)
-    stakeStillValid(_stakeId)
     callNotStarted
   {
-    Stake storage rulingStake = stakes[_stakeId];
-    Claim storage rulingClaim = stakes[_stakeId].claims[_claimId];
+    require(_claimId < stakes[_stakeId].numClaims); // checks the claim bounds
+    require(!stakes[_stakeId].claims[_claimId].ruled); // checks the claim isn't ruled
 
-    rulingClaim.ruled = true;
-    rulingClaim.correct = _correct;
-    rulingClaim.arbiter = msg.sender;
+    require(_arbiterId < stakes[_stakeId].arbiters.length); // checks the arbiter bounds
+    require(msg.sender == stakes[_stakeId].arbiters[_arbiterId]); // checks that the sender is a valid arbiter
+    require(stakes[_stakeId].active); // checks that the stake is still active
 
-    if (correct) {
+    stakes[_stakeId].claims[_claimId].ruled = true;
+    stakes[_stakeId].claims[_claimId].correct = _correct;
+    stakes[_stakeId].claims[_claimId].arbiter = msg.sender;
+
+    if (stakes[_stakeId].claims[_claimId].correct) {
       // Claimant is correct...
-      rulingStake.stakeAmount -= (rulingClaim.claimAmount +
-                                  rulingStake.griefingFee +
-                                  rulingStake.arbiterFee));
-      rulingClaim.claimant.transfer(2 * rulingClaim.claimAmount +
-                                    2 * rulingStake.griefingFee +
-                                    rulingStake.arbiterFee);
+      stakes[_stakeId].stakeAmount -= (stakes[_stakeId].claims[_claimId].claimAmount +
+                                  stakes[_stakeId].griefingFee +
+                                  stakes[_stakeId].arbiterFee);
+      stakes[_stakeId].claims[_claimId].claimant.transfer(2 * stakes[_stakeId].claims[_claimId].claimAmount +
+                                    2 * stakes[_stakeId].griefingFee +
+                                    stakes[_stakeId].arbiterFee);
     } else {
       // Staker is correct
-      rulingStake.staker.transfer(rulingClaim.claimAmount +
-                                  rulingStake.griefingFee);
+      stakes[_stakeId].staker.transfer(stakes[_stakeId].claims[_claimId].claimAmount +
+                                  stakes[_stakeId].griefingFee);
     }
 
-    msg.sender.send(rulingStake.arbiterFee);
+    msg.sender.transfer(stakes[_stakeId].arbiterFee);
 
     emit ClaimRuledUpon(_stakeId,
-                           _claimId,
-                           _arbiterId,
-                           _correct
-                           _data);
+                         _claimId,
+                         _arbiterId,
+                         stakes[_stakeId].claims[_claimId].correct,
+                         _data);
   }
 
   /// @dev reclaimStake(): Allows users to refund the contributions they've
   ///                            made to a particular bounty, but only if the bounty
   ///                            has not yet paid out, and the deadline has elapsed.
-  /// @param _sender the sender of the transaction issuing the bounty (should be the same as msg.sender unless the txn is called by the meta tx relayer)
-  /// @param _bountyId the index of the bounty
-  /// @param _contributionId the index of the contribution being refunded
+  /// @param _stakeId the sender of the transaction issuing the bounty (should be the same as msg.sender unless the txn is called by the meta tx relayer)
   function reclaimStake(
     uint _stakeId)
     public
     validateStakeArrayIndex(_stakeId)
     onlyStaker(_stakeId)
-    deadlineIsPassed
+    deadlineIsPassed(_stakeId)
     callNotStarted
   {
-    stakes[_stakeId].refunded = true;
-    stakes[_stakeId].staker.send(stakes[_stakeId].stakeAmount);
+    stakes[_stakeId].active = false;
+    stakes[_stakeId].staker.transfer(stakes[_stakeId].stakeAmount);
 
     emit StakeReclaimed(_stakeId);
   }
@@ -351,12 +329,12 @@ contract StandardStaking {
 
   function addArbiter(
     uint _stakeId,
-    address payable _newArbiter,)
+    address payable _newArbiter)
     public
     validateStakeArrayIndex(_stakeId)
     onlyStaker(_stakeId)
   {
-    stakes[_stakeId].arbiters(_newArbiter);
+    stakes[_stakeId].arbiters.push(_newArbiter);
 
     emit ArbiterAdded(_stakeId, _newArbiter);
   }
@@ -364,7 +342,7 @@ contract StandardStaking {
    * Events
    */
 
-  event StakeCreated(uint _stakeId, address payable _staker, _, address payable[] _arbiters, uint _stakeAmount, uint _arbiterFee, uint _griefingFee, string _data, uint _deadline);
+  event StakeCreated(uint _stakeId, address creator, address payable _staker, address payable[] _arbiters, uint _stakeAmount, uint _arbiterFee, uint _griefingFee, string _data, uint _deadline);
   event ClaimOpened(uint _stakeId, uint _claimId, address payable _claimant, uint _claimAmount, string _data);
   event ClaimRuledUpon(uint _stakeId, uint _claimId, uint _arbiterId, bool _correct, string _data);
   event StakeReclaimed(uint _stakeId);
