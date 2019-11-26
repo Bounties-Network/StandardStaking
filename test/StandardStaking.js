@@ -1,4 +1,4 @@
-const StandardBounties = artifacts.require("../contracts/StandardStaking");
+const StandardStaking = artifacts.require("../contracts/StandardStaking");
 
 const utils = require('./helpers/Utils');
 
