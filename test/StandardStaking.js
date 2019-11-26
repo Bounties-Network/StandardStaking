@@ -18,15 +18,19 @@ contract('StandardStaking', function(accounts) {
 
     await registry.createStake(accounts[0], [accounts[1], accounts[2], accounts[3]], 1818, 180, 18, 2528821098, "data", {value: 1818, from: accounts[5]});
 
-    let stakes = await registry.stakes();
+    let stake = await registry.getStake(0);
+    let numStakes = await registry.numStakes();
 
-    assert(stakes.length == 1);
-    assert(stakes[0].staker == accounts[0]);
-    assert(stakes[0].arbiters == [accounts[1], accounts[2], accounts[3]]);
-    assert(stakes[0].stakeAmount == 1818);
-    assert(stakes[0].arbiterFee == 180);
-    assert(stakes[0].griefingFee == 18);
-    assert(stakes[0].deadline == 2528821098);
+    assert(numStakes == 1);
+    assert(stake.staker == accounts[0]);
+    assert(stake.arbiters[0] == accounts[1]);
+    assert(stake.arbiters[1] == accounts[2]);
+    assert(stake.arbiters[2] == accounts[3]);
+    assert(stake.stakeAmount == 1818);
+    assert(stake.arbiterFee == 180);
+    assert(stake.griefingFee == 18);
+
+    assert(stake.deadline == 2528821098);
 
   });
 
@@ -108,13 +112,14 @@ contract('StandardStaking', function(accounts) {
 
     await registry.openClaim(0, 18, "data2", {value: 38, from: accounts[6]});
 
-    let stake = await registry.stakes(0);
+    let stake = await registry.getStake(0);
+    let claim = stake.claims[0];
 
-    assert(stake.claims[0].claimant == accounts[6]);
-    assert(stake.claims[0].arbiter == '0x0000000000000000000000000000000000000000');
-    assert(stake.claims[0].claimAmount == 18);
-    assert(stake.claims[0].ruled == false);
-    assert(stake.claims[0].correct == false);
+    assert(claim.claimant == accounts[6]);
+    assert(claim.arbiter == '0x0000000000000000000000000000000000000000');
+    assert(claim.claimAmount == 18);
+    assert(claim.ruled == false);
+    assert(claim.correct == false);
   });
 
   it("Verifies that I can't open a claim against a stake that's out of bounds", async () => {
@@ -139,7 +144,7 @@ contract('StandardStaking', function(accounts) {
     await registry.createStake(accounts[0], [accounts[1], accounts[2], accounts[3]], 1818, 10, 10, 2528821098, "data", {value: 1818, from: accounts[5]});
 
     try {
-      await registry.openClaim(0, 18, "data2", {value: 38, from: accounts[6]});
+      await registry.openClaim(0, 18, "data2", {value: 28, from: accounts[6]});
 
     } catch (error){
       return utils.ensureException(error);
@@ -172,7 +177,8 @@ contract('StandardStaking', function(accounts) {
 
     await registry.ruleOnClaim(0, 0, 1, true, "data3", {from: accounts[2]});
 
-    let claim = await registry.stakes(0).claims[0];
+    let stake = await registry.getStake(0);
+    let claim = stake.claims[0];
 
     assert(claim.ruled == true);
     assert(claim.correct == true);

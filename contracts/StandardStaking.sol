@@ -68,14 +68,13 @@ contract StandardStaking {
     uint griefingFee; // The fee which is paid to the winning side for the trouble of dealing with the claim
     bool active; // A boolean which stores whether a user's stake is active (ie has the funds and accepts claims)
     uint deadline; // A uint representing the time after which the staker may relinquish their stake
-    mapping(uint => Claim) claims; // An array of Fulfillments which store the various submissions which have been made to the bounty
-    uint numClaims;
+    Claim[] claims; // An array of Fulfillments which store the various submissions which have been made to the bounty
   }
 
   struct Claim {
     address payable claimant; // The address of the individual who created the claim
-    address payable arbiter; // The address of the arbiter who ends up ruling on the claim
     uint claimAmount; // The amount of wei which the user seeks within the claim
+    address payable arbiter; // The address of the arbiter who ends up ruling on the claim
     bool ruled; // A boolean which stores whether or not the claim has been ruled upon by one of the available arbiters
     bool correct; // A boolean which stores whether or not the claimant has been deemed correct in their claim
   }
@@ -137,16 +136,6 @@ contract StandardStaking {
     _;
   }
 
-  modifier verifyClaimDeposit(
-    uint _stakeId,
-    uint _claimAmount)
-  {
-    require(msg.value == (_claimAmount +
-                          stakes[_stakeId].arbiterFee +
-                          stakes[_stakeId].griefingFee));
-    _;
-  }
-
   modifier claimNotTooLarge(
     uint _stakeId,
     uint _claimAmount)
@@ -200,6 +189,7 @@ contract StandardStaking {
     newStake.arbiterFee = _arbiterFee;
     newStake.griefingFee = _griefingFee;
     newStake.deadline = _deadline;
+    newStake.active = true;
 
     numStakes = numStakes.add(1);
 
@@ -233,18 +223,15 @@ contract StandardStaking {
     public
     payable
     validateStakeArrayIndex(_stakeId)
-    verifyClaimDeposit(_stakeId, _claimAmount)
     claimNotTooLarge(_stakeId, _claimAmount)
     callNotStarted
   {
-    uint claimId =  stakes[_stakeId].numClaims;
-    Claim storage newClaim = stakes[_stakeId].claims[claimId];
+    require(msg.value == (_claimAmount + stakes[_stakeId].arbiterFee + stakes[_stakeId].griefingFee));
 
-    newClaim.claimant = msg.sender;
-    newClaim.claimAmount = _claimAmount;
+    stakes[_stakeId].claims.push(Claim(msg.sender, _claimAmount, address(0), false, false));
 
     emit ClaimOpened(_stakeId,
-                     claimId, // The new contributionId
+                     (stakes[_stakeId].claims.length - 1), // The new contributionId
                      msg.sender,
                      _claimAmount,
                      _data);
@@ -261,7 +248,7 @@ contract StandardStaking {
     validateStakeArrayIndex(_stakeId)
     callNotStarted
   {
-    require(_claimId < stakes[_stakeId].numClaims); // checks the claim bounds
+    require(_claimId < stakes[_stakeId].claims.length); // checks the claim bounds
     require(!stakes[_stakeId].claims[_claimId].ruled); // checks the claim isn't ruled
 
     require(_arbiterId < stakes[_stakeId].arbiters.length); // checks the arbiter bounds
@@ -338,6 +325,18 @@ contract StandardStaking {
 
     emit ArbiterAdded(_stakeId, _newArbiter);
   }
+
+  function getStake(
+    uint _stakeId
+    )
+    external
+    view
+    validateStakeArrayIndex(_stakeId)
+    returns (Stake memory)
+  {
+    return stakes[_stakeId];
+  }
+
   /*
    * Events
    */
